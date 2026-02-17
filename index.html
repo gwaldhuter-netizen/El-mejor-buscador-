@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Waldhuter - Buscador + Cuenta (v6)</title>
+<style>
+:root{font-family:-apple-system,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+body{margin:0;padding:16px;line-height:1.25}
+.card{border:1px solid #ddd;border-radius:14px;padding:14px;margin:12px 0}
+h1{font-size:18px;margin:0 0 10px}
+.muted{color:#666;font-size:13px}
+label{font-size:13px;color:#333;display:block;margin:10px 0 6px}
+input[type=text],input[type=password]{width:100%;font-size:18px;padding:12px;border-radius:12px;border:1px solid #ccc}
+input[type=file]{width:100%}
+button{width:100%;font-size:17px;padding:12px;border-radius:12px;border:0;background:#111;color:#fff;margin-top:10px}
+button.secondary{background:#f2f2f2;color:#111;border:1px solid #ddd}
+.row{display:flex;gap:10px}
+.row>*{flex:1}
+.pill{display:inline-block;padding:3px 10px;border-radius:999px;background:#f2f2f2;font-size:12px}
+.result-title{font-size:16px;font-weight:800;margin:0 0 6px}
+.result-line{font-size:15px;margin:2px 0}
+.ok{color:#0a7a2f}
+.bad{color:#b00020}
+details>summary{cursor:pointer}
+/* Cart */
+.cart-item{padding:10px 0;border-top:1px solid #eee}
+.cart-title{font-weight:800;font-size:14px;margin:0 0 4px}
+.cart-sub{font-size:13px;color:#444;margin:0}
+.cart-actions{display:flex;gap:10px;margin-top:10px;align-items:center;flex-wrap:wrap}
+.iconbtn{width:46px;height:46px;border-radius:999px;border:0;font-size:22px;line-height:46px;text-align:center}
+.iconbtn.plus{background:#111;color:#fff}
+.iconbtn.minus{background:#f2f2f2;color:#111;border:1px solid #ddd}
+.iconbtn.del{background:#b00020;color:#fff;width:auto;padding:0 14px;font-size:14px;border-radius:12px;height:46px;line-height:46px}
+.qty{min-width:38px;text-align:center;font-weight:900;font-size:18px}
+/* Modal */
+#modalBack{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:16px}
+#modal{width:100%;max-width:520px;background:#fff;border-radius:16px;padding:14px}
+</style>
+</head>
+<body>
+<h1>Buscador ISBN + Cuenta</h1>
+<div class="muted">Pegás ISBN → te muestra el libro → te pregunta si querés agregar → arma la cuenta con total. Podés quitar títulos y ajustar cantidades.</div>
+
+<div class="card">
+  <div id="status" class="muted">Cargando lista…</div>
+  <div class="row">
+    <button id="refreshBtn" type="button">Actualizar lista</button>
+    <button id="resetCartBtn" class="secondary" type="button">Vaciar cuenta</button>
+  </div>
+
+  <details style="margin-top:10px;">
+    <summary class="muted">Actualizar desde archivo (CSV) y guardar en el celular</summary>
+    <div class="muted" style="margin-top:8px;">
+      Elegí el CSV nuevo (el mismo formato que usás) y tocá “Guardar lista en el celular”.
+      Después, aunque no actualices el hosting, el iPhone usa la lista guardada.
+    </div>
+    <input id="csvFile" type="file" accept=".csv,text/csv" />
+    <button id="saveLocalBtn" class="secondary" type="button">Guardar lista en el celular</button>
+    <div id="csvMsg" class="muted" style="margin-top:8px;"></div>
+  </details>
+</div>
+
+<div class="card">
+  <label>ISBN-13</label>
+  <input id="isbn" type="text" inputmode="numeric" placeholder="Pegá el ISBN (13 dígitos)" />
+  <div class="row">
+    <button id="buscarBtn" type="button">Buscar</button>
+    <button id="clearBtn" class="secondary" type="button">Limpiar</button>
+  </div>
+  <div id="result" style="margin-top:12px;"></div>
+</div>
+
+<div class="card">
+  <div class="result-title">Cuenta</div>
+  <div class="muted">Total: <span class="pill" id="totalPill">$0</span></div>
+  <div id="cart"></div>
+</div>
+
+<div id="modalBack">
+  <div id="modal">
+    <div class="result-title">¿Agregar a la cuenta?</div>
+    <div id="modalBody" class="muted" style="margin-top:8px;"></div>
+    <div class="row" style="margin-top:12px;">
+      <button id="modalYes" type="button">Sí, agregar</button>
+      <button id="modalNo" class="secondary" type="button">No</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================
+   STATE + STORAGE
+   ===================== */
+let DB = null;
+let LAST_FOUND = null;
+const STORAGE_CART = "waldhuter_cart_v6";
+const STORAGE_DB   = "waldhuter_db_v6";
+const STORAGE_META = "waldhuter_db_meta_v6";
+
+/* =====================
+   ELEMENTS
+   ===================== */
+const elStatus = document.getElementById("status");
+const elISBN = document.getElementById("isbn");
+const elBuscar = document.getElementById("buscarBtn");
+const elClear = document.getElementById("clearBtn");
+const elResult = document.getElementById("result");
+const elCart = document.getElementById("cart");
+const elTotal = document.getElementById("totalPill");
+const elRefresh = document.getElementById("refreshBtn");
+const elResetCart = document.getElementById("resetCartBtn");
+
+const elCsvFile = document.getElementById("csvFile");
+const elSaveLocal = document.getElementById("saveLocalBtn");
+const elCsvMsg = document.getElementById("csvMsg");
+
+const modalBack = document.getElementById("modalBack");
+const modalBody = document.getElementById("modalBody");
+const modalYes = document.getElementById("modalYes");
+const modalNo = document.getElementById("modalNo");
+
+/* =====================
+   HELPERS
+   ===================== */
+function normalizeISBN(s){ return (s||"").toString().replace(/[^\dX]/gi,"").trim(); }
+function setStatus(text, cls="muted"){ elStatus.className = cls; elStatus.textContent = text; }
+function showResult(html){ elResult.innerHTML = html; }
+function setCsvMsg(text, cls="muted"){ elCsvMsg.className = cls; elCsvMsg.textContent = text; }
+
+function parsePriceToNumber(p){
+  if (p === null || p === undefined) return 0;
+  let s = String(p).trim();
+  if (!s) return 0;
+  s = s.replace(/\s/g,"").replace(/[^0-9.,-]/g,"");
+  if (s.includes(".") && s.includes(",")) s = s.replace(/\./g,"").replace(",", ".");
+  else if (s.includes(",") && !s.includes(".")) s = s.replace(",", ".");
+  const n = Number(s);
+  return isFinite(n) ? n : 0;
+}
+function fmtMoney(n){
+  try { return n.toLocaleString("es-AR", {style:"currency", currency:"ARS", maximumFractionDigits:2}); }
+  catch { return "$" + (Math.round(n*100)/100).toFixed(2); }
+}
+
+/* =====================
+   CART
+   ===================== */
+function loadCart(){ try { return JSON.parse(localStorage.getItem(STORAGE_CART) || "{}") || {}; } catch { return {}; } }
+function saveCart(cart){ localStorage.setItem(STORAGE_CART, JSON.stringify(cart)); }
+function cartTotal(cart){
+  let total = 0;
+  for (const code of Object.keys(cart)) total += (cart[code].price||0) * (cart[code].qty||0);
+  return total;
+}
+function renderCart(){
+  const cart = loadCart();
+  const codes = Object.keys(cart);
+  if (!codes.length){
+    elCart.innerHTML = '<div class="muted" style="margin-top:10px;">Sin items.</div>';
+    elTotal.textContent = fmtMoney(0);
+    return;
+  }
+  let html = "";
+  for (const code of codes){
+    const it = cart[code];
+    html += `
+      <div class="cart-item">
+        <p class="cart-title">${it.title || "(sin título)"}</p>
+        <p class="cart-sub">ISBN: ${code} · Precio: ${fmtMoney(it.price || 0)}</p>
+        <div class="cart-actions">
+          <button class="iconbtn minus" data-act="dec" data-code="${code}" aria-label="Restar">−</button>
+          <span class="qty">${it.qty || 0}</span>
+          <button class="iconbtn plus" data-act="inc" data-code="${code}" aria-label="Sumar">+</button>
+          <button class="iconbtn del" data-act="del" data-code="${code}">Quitar</button>
+        </div>
+      </div>
+    `;
+  }
+  elCart.innerHTML = html;
+  elTotal.textContent = fmtMoney(cartTotal(cart));
+}
+elCart.addEventListener("click", (e)=>{
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const act = btn.getAttribute("data-act");
+  const code = btn.getAttribute("data-code");
+  if (!act || !code) return;
+
+  const cart = loadCart();
+  if (!cart[code]) return;
+
+  if (act === "inc") cart[code].qty = (cart[code].qty||0) + 1;
+  if (act === "dec") cart[code].qty = Math.max(1, (cart[code].qty||1) - 1);
+  if (act === "del") delete cart[code];
+
+  saveCart(cart);
+  renderCart();
+});
+elResetCart.addEventListener("click", ()=>{
+  localStorage.removeItem(STORAGE_CART);
+  renderCart();
+});
+
+/* =====================
+   MODAL
+   ===================== */
+function openModalForAdd(found){
+  LAST_FOUND = found;
+  modalBody.innerHTML = `
+    <div><b>${found.row.t || "(sin título)"}</b></div>
+    <div class="muted" style="margin-top:6px;">${fmtMoney(found.priceNum)} · ISBN ${found.code}</div>
+    <div class="muted" style="margin-top:6px;">¿Querés agregarlo a la cuenta?</div>
+  `;
+  modalBack.style.display = "flex";
+}
+function closeModal(){ modalBack.style.display = "none"; }
+
+modalNo.addEventListener("click", ()=>{
+  closeModal();
+  elISBN.select(); elISBN.focus();
+});
+modalYes.addEventListener("click", ()=>{
+  if (!LAST_FOUND) { closeModal(); return; }
+  const cart = loadCart();
+  const code = LAST_FOUND.code;
+  if (!cart[code]) cart[code] = { title: LAST_FOUND.row.t || "", price: LAST_FOUND.priceNum, qty: 1 };
+  else cart[code].qty = (cart[code].qty||0) + 1;
+  saveCart(cart);
+  renderCart();
+  closeModal();
+  elISBN.value = "";
+  showResult("");
+  elISBN.focus();
+});
+
+/* =====================
+   LOOKUP
+   ===================== */
+function renderRow(code, row, priceNum){
+  const s = (row.s ?? "").toString().trim();
+  const a = (row.a ?? "").toString().trim();
+  const ed = (row.e ?? "").toString().trim();
+  return `
+    <div class="card">
+      <div class="result-title">${row.t || "(sin título)"}</div>
+      <div class="result-line"><b>ISBN:</b> ${code}</div>
+      <div class="result-line"><b>Precio (PVP):</b> ${fmtMoney(priceNum)}</div>
+      ${s ? `<div class="result-line"><b>Stock:</b> ${s}</div>` : ""}
+      ${a ? `<div class="result-line"><b>Autor:</b> ${a}</div>` : ""}
+      ${ed ? `<div class="result-line"><b>Editorial:</b> ${ed}</div>` : ""}
+    </div>
+  `;
+}
+function renderNotFound(code){
+  return `
+    <div class="card">
+      <div class="result-title bad">No lo encontré en la lista</div>
+      <div class="result-line"><b>ISBN:</b> ${code}</div>
+    </div>
+  `;
+}
+function lookup(){
+  const code = normalizeISBN(elISBN.value);
+  if (!code){ showResult(""); return; }
+  if (!DB){
+    showResult(`<div class="card"><div class="result-title">Todavía está cargando la lista…</div></div>`);
+    return;
+  }
+  const row = DB[code];
+  if (row){
+    const priceNum = parsePriceToNumber(row.p);
+    showResult(renderRow(code, row, priceNum));
+    openModalForAdd({code, row, priceNum});
+  } else {
+    showResult(renderNotFound(code));
+  }
+}
+
+/* =====================
+   DB LOAD / UPDATE
+   ===================== */
+function loadDBFromLocal(){
+  try {
+    const raw = localStorage.getItem(STORAGE_DB);
+    if (!raw) return false;
+    DB = JSON.parse(raw);
+    const count = Object.keys(DB).length;
+    setStatus(`Lista cargada ✅ (${count.toLocaleString("es-AR")} ISBN) — cache local`, "muted ok");
+    return true;
+  } catch { return false; }
+}
+
+async function loadDBFromServer(){
+  const res = await fetch(`./libros.json?v=${Date.now()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  DB = await res.json();
+  const count = Object.keys(DB).length;
+  setStatus(`Lista cargada ✅ (${count.toLocaleString("es-AR")} ISBN) — web`, "muted ok");
+  localStorage.setItem(STORAGE_DB, JSON.stringify(DB));
+  localStorage.setItem(STORAGE_META, JSON.stringify({source:"web", loadedAt:new Date().toISOString(), count}));
+}
+
+async function bootDB(){
+  if (loadDBFromLocal()) return;
+  try { await loadDBFromServer(); }
+  catch { setStatus("No pude cargar libros.json. Subí index.html + libros.json juntos.", "muted bad"); }
+}
+
+elRefresh.addEventListener("click", async ()=>{
+  setStatus("Actualizando lista…");
+  try { await loadDBFromServer(); }
+  catch { setStatus("No pude actualizar. ¿Está libros.json en el mismo lugar que index.html?", "muted bad"); }
+});
+
+/* =====================
+   CSV IMPORT (robust-ish)
+   ===================== */
+let parsedCandidate = null;
+
+function stripBOM(s){ return (s||"").replace(/^\uFEFF/, ""); }
+function stripAccents(s){ return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,""); }
+function normHeader(s){ return stripAccents(stripBOM(String(s||"").trim().toLowerCase())); }
+
+function splitCSVLine(line, delim){
+  const out=[]; let cur=""; let inQ=false;
+  for (let i=0;i<line.length;i++){
+    const ch=line[i];
+    if (ch === '"'){
+      if (inQ && line[i+1] === '"'){ cur+='"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === delim && !inQ){
+      out.push(cur); cur="";
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out.map(v=>v.trim());
+}
+function guessDelimiter(line){
+  const candidates=[";",",","\t"];
+  let best=";", bestCount=-1;
+  for (const d of candidates){
+    const c = (line.split(d).length - 1);
+    if (c > bestCount){ bestCount = c; best = d; }
+  }
+  return best;
+}
+
+function parseCSVToDB(text){
+  const lines = text.replace(/\r\n/g,"\n").replace(/\r/g,"\n").split("\n");
+
+  let headerIdx=-1, delim=";", header=null;
+  for (let i=0;i<lines.length;i++){
+    const raw = lines[i];
+    if (!raw || !raw.trim()) continue;
+    const d = guessDelimiter(raw);
+    const cols = splitCSVLine(raw, d);
+    const low = cols.map(c=>normHeader(c));
+    const hasCodigo = low.includes("codigo") || low.includes("isbn");
+    const hasPvp = low.includes("pvp") || low.includes("precio");
+    if (hasCodigo && hasPvp && cols.length >= 4){ headerIdx=i; delim=d; header=cols; break; }
+  }
+  if (headerIdx === -1) throw new Error("No encontré encabezados (Código/ISBN y PVP/Precio).");
+
+  const idx = {};
+  header.forEach((h,i)=> idx[normHeader(h)] = i );
+
+  const pick = (names)=>{
+    for (const n of names){
+      const k = normHeader(n);
+      if (idx[k] !== undefined) return idx[k];
+    }
+    return undefined;
+  };
+
+  const iCodigo = pick(["Código","Codigo","ISBN"]);
+  const iTitulo = pick(["Título","Titulo"]);
+  const iAutor = pick(["Autor"]);
+  const iEditorial = pick(["Editorial"]);
+  const iPvp = pick(["PVP","Precio"]);
+  const iStock = pick(["Stock Físico","Stock Fisico","Stock"]);
+
+  if (iCodigo === undefined || iPvp === undefined) throw new Error("Encontré header, pero no pude ubicar Código y PVP.");
+
+  const obj = {};
+  let count = 0;
+  for (let i=headerIdx+1;i<lines.length;i++){
+    const raw = lines[i];
+    if (!raw || !raw.trim()) continue;
+    const cols = splitCSVLine(raw, delim);
+    const code = normalizeISBN(cols[iCodigo] ?? "");
+    if (!code || code.toLowerCase() === "codigo") continue;
+    obj[code] = {
+      t: iTitulo===undefined ? "" : (cols[iTitulo] ?? ""),
+      a: iAutor===undefined ? "" : (cols[iAutor] ?? ""),
+      e: iEditorial===undefined ? "" : (cols[iEditorial] ?? ""),
+      p: (cols[iPvp] ?? ""),
+      s: iStock===undefined ? "" : (cols[iStock] ?? "")
+    };
+    count++;
+  }
+  return {obj, count};
+}
+
+elCsvFile.addEventListener("change", async (ev)=>{
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  setCsvMsg("Leyendo CSV…");
+  try {
+    const text = await f.text();
+    const {obj, count} = parseCSVToDB(text);
+    parsedCandidate = {obj, count, name: f.name};
+    setCsvMsg(`CSV listo ✅ (${count.toLocaleString("es-AR")} ISBN). Tocá “Guardar lista en el celular”.`, "muted ok");
+  } catch (e){
+    parsedCandidate = null;
+    setCsvMsg("Error: " + e.message, "muted bad");
+  }
+});
+
+elSaveLocal.addEventListener("click", ()=>{
+  if (!parsedCandidate){
+    setCsvMsg("Primero elegí un CSV válido.", "muted bad");
+    return;
+  }
+  DB = parsedCandidate.obj;
+  localStorage.setItem(STORAGE_DB, JSON.stringify(DB));
+  localStorage.setItem(STORAGE_META, JSON.stringify({source:"csv-local", name: parsedCandidate.name, loadedAt:new Date().toISOString(), count: parsedCandidate.count}));
+  setStatus(`Lista guardada ✅ (${parsedCandidate.count.toLocaleString("es-AR")} ISBN) — CSV local`, "muted ok");
+  setCsvMsg("Guardado ✅", "muted ok");
+});
+
+/* =====================
+   EVENTS
+   ===================== */
+elBuscar.addEventListener("click", lookup);
+elClear.addEventListener("click", ()=>{ elISBN.value=""; showResult(""); elISBN.focus(); });
+elISBN.addEventListener("keydown", (e)=>{ if (e.key === "Enter") lookup(); });
+
+/* =====================
+   BOOT
+   ===================== */
+renderCart();
+bootDB();
+</script>
+</body>
+</html>
